@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"os"
 
 	"github.com/alecthomas/kong"
@@ -21,13 +22,19 @@ func main() {
 	log := logger.New(cli.Log)
 
 	validator, err := edgeone.New(edgeone.Config{
-		SecretID:    cli.EdgeOne.SecretID,
-		SecretKey:   cli.EdgeOne.SecretKey,
-		APIEndpoint: cli.EdgeOne.APIEndpoint,
-		Region:      cli.EdgeOne.Region,
-		CacheSize:   cli.EdgeOne.CacheSize,
-		CacheTTL:    cli.EdgeOne.CacheTTL,
-		Timeout:     cli.EdgeOne.Timeout,
+		SecretID:            cli.EdgeOne.SecretID,
+		SecretKey:           cli.EdgeOne.SecretKey,
+		APIEndpoint:         cli.EdgeOne.APIEndpoint,
+		Region:              cli.EdgeOne.Region,
+		CacheSize:           cli.EdgeOne.CacheSize,
+		CacheTTL:            cli.EdgeOne.CacheTTL,
+		Timeout:             cli.EdgeOne.Timeout,
+		IdleConnTimeout:     cli.EdgeOne.IdleConnTimeout,
+		MaxIdleConns:        cli.EdgeOne.MaxIdleConns,
+		MaxIdleConnsPerHost: cli.EdgeOne.MaxIdleConnsPerHost,
+		DialKeepAlive:       cli.EdgeOne.DialKeepAlive,
+		WarmInterval:        cli.EdgeOne.WarmInterval,
+		WarmTimeout:         cli.EdgeOne.WarmTimeout,
 	}, log)
 	if err != nil {
 		log.Fatal().Err(err).Msg("edgeone validator init failed")
@@ -39,9 +46,12 @@ func main() {
 		Int("cache_size", cli.EdgeOne.CacheSize).
 		Dur("cache_ttl", cli.EdgeOne.CacheTTL).
 		Dur("timeout", cli.EdgeOne.Timeout).
+		Dur("warm_interval", cli.EdgeOne.WarmInterval).
 		Str("log_output", cli.Log.Output).
 		Str("log_format", string(cli.Log.Format)).
 		Msg("edgeone validator configured")
+
+	validator.StartWarm(context.Background())
 
 	factory := edgeoneproc.NewProcessorFactory(validator, log)
 

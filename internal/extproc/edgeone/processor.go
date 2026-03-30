@@ -3,6 +3,7 @@
 package edgeone
 
 import (
+	"context"
 	"fmt"
 	"net/netip"
 
@@ -29,7 +30,7 @@ const (
 
 // Validator checks if an IP address belongs to EdgeOne's network.
 type Validator interface {
-	IsEdgeOneIP(ip netip.Addr) (bool, error)
+	IsEdgeOneIP(ctx context.Context, ip netip.Addr) (bool, error)
 }
 
 // ProcessorFactory creates EdgeOne processors.
@@ -72,7 +73,7 @@ func (p *Processor) ProcessRequestHeaders(ctx *extproc.RequestContext) *extproc.
 	}
 
 	trustedVal := TrustLevelNo
-	if isEdgeOne, err := p.validator.IsEdgeOneIP(remoteIP); err == nil && isEdgeOne {
+	if isEdgeOne, err := p.validator.IsEdgeOneIP(ctx.Context, remoteIP); err == nil && isEdgeOne {
 		trustedVal = TrustLevelYes
 	} else if err != nil {
 		p.log.Error().

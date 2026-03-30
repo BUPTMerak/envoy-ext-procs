@@ -1,6 +1,7 @@
 package extproc
 
 import (
+	"context"
 	"errors"
 	"io"
 	"net/http"
@@ -54,7 +55,7 @@ func (s *Server) Process(srv envoy_service_proc_v3.ExternalProcessor_ProcessServ
 
 		go func() {
 			start := time.Now()
-			resp := s.processOne(processor, req)
+			resp := s.processOne(ctx, processor, req)
 			s.log.Trace().
 				Dur("duration", time.Since(start)).
 				Interface("request", req).
@@ -68,6 +69,7 @@ func (s *Server) Process(srv envoy_service_proc_v3.ExternalProcessor_ProcessServ
 }
 
 func (s *Server) processOne(
+	ctx context.Context,
 	processor Processor,
 	req *envoy_service_proc_v3.ProcessingRequest,
 ) *envoy_service_proc_v3.ProcessingResponse {
@@ -78,17 +80,17 @@ func (s *Server) processOne(
 
 	switch v := req.Request.(type) {
 	case *envoy_service_proc_v3.ProcessingRequest_RequestHeaders:
-		return s.handleRequestHeaders(processor, req, v.RequestHeaders)
+		return s.handleRequestHeaders(ctx, processor, req, v.RequestHeaders)
 	case *envoy_service_proc_v3.ProcessingRequest_ResponseHeaders:
-		return s.handleResponseHeaders(processor, req, v.ResponseHeaders)
+		return s.handleResponseHeaders(ctx, processor, req, v.ResponseHeaders)
 	case *envoy_service_proc_v3.ProcessingRequest_RequestBody:
-		return s.handleRequestBody(processor, req, v.RequestBody)
+		return s.handleRequestBody(ctx, processor, req, v.RequestBody)
 	case *envoy_service_proc_v3.ProcessingRequest_ResponseBody:
-		return s.handleResponseBody(processor, req, v.ResponseBody)
+		return s.handleResponseBody(ctx, processor, req, v.ResponseBody)
 	case *envoy_service_proc_v3.ProcessingRequest_RequestTrailers:
-		return s.handleRequestTrailers(processor, req, v.RequestTrailers)
+		return s.handleRequestTrailers(ctx, processor, req, v.RequestTrailers)
 	case *envoy_service_proc_v3.ProcessingRequest_ResponseTrailers:
-		return s.handleResponseTrailers(processor, req, v.ResponseTrailers)
+		return s.handleResponseTrailers(ctx, processor, req, v.ResponseTrailers)
 	default:
 		s.log.Warn().
 			Interface("request", req.Request).
@@ -99,17 +101,19 @@ func (s *Server) processOne(
 }
 
 func (s *Server) handleRequestHeaders(
+	ctx context.Context,
 	processor Processor,
 	req *envoy_service_proc_v3.ProcessingRequest,
 	h *envoy_service_proc_v3.HttpHeaders,
 ) *envoy_service_proc_v3.ProcessingResponse {
-	ctx := &RequestContext{
+	reqCtx := &RequestContext{
+		Context:     ctx,
 		Attributes:  req.GetAttributes(),
 		Headers:     parseHeaders(h),
 		EndOfStream: h.GetEndOfStream(),
 	}
 
-	result := processor.ProcessRequestHeaders(ctx)
+	result := processor.ProcessRequestHeaders(reqCtx)
 	return buildHeadersResponse(result, func(resp *envoy_service_proc_v3.HeadersResponse) *envoy_service_proc_v3.ProcessingResponse {
 		return &envoy_service_proc_v3.ProcessingResponse{
 			Response: &envoy_service_proc_v3.ProcessingResponse_RequestHeaders{
@@ -120,17 +124,19 @@ func (s *Server) handleRequestHeaders(
 }
 
 func (s *Server) handleResponseHeaders(
+	ctx context.Context,
 	processor Processor,
 	req *envoy_service_proc_v3.ProcessingRequest,
 	h *envoy_service_proc_v3.HttpHeaders,
 ) *envoy_service_proc_v3.ProcessingResponse {
-	ctx := &RequestContext{
+	reqCtx := &RequestContext{
+		Context:     ctx,
 		Attributes:  req.GetAttributes(),
 		Headers:     parseHeaders(h),
 		EndOfStream: h.GetEndOfStream(),
 	}
 
-	result := processor.ProcessResponseHeaders(ctx)
+	result := processor.ProcessResponseHeaders(reqCtx)
 	return buildHeadersResponse(result, func(resp *envoy_service_proc_v3.HeadersResponse) *envoy_service_proc_v3.ProcessingResponse {
 		return &envoy_service_proc_v3.ProcessingResponse{
 			Response: &envoy_service_proc_v3.ProcessingResponse_ResponseHeaders{
@@ -141,16 +147,18 @@ func (s *Server) handleResponseHeaders(
 }
 
 func (s *Server) handleRequestBody(
+	ctx context.Context,
 	processor Processor,
 	req *envoy_service_proc_v3.ProcessingRequest,
 	b *envoy_service_proc_v3.HttpBody,
 ) *envoy_service_proc_v3.ProcessingResponse {
-	ctx := &RequestContext{
+	reqCtx := &RequestContext{
+		Context:     ctx,
 		Attributes:  req.GetAttributes(),
 		EndOfStream: b.GetEndOfStream(),
 	}
 
-	result := processor.ProcessRequestBody(ctx, b.GetBody(), b.GetEndOfStream())
+	result := processor.ProcessRequestBody(reqCtx, b.GetBody(), b.GetEndOfStream())
 	return buildBodyResponse(result, func(resp *envoy_service_proc_v3.BodyResponse) *envoy_service_proc_v3.ProcessingResponse {
 		return &envoy_service_proc_v3.ProcessingResponse{
 			Response: &envoy_service_proc_v3.ProcessingResponse_RequestBody{
@@ -161,16 +169,18 @@ func (s *Server) handleRequestBody(
 }
 
 func (s *Server) handleResponseBody(
+	ctx context.Context,
 	processor Processor,
 	req *envoy_service_proc_v3.ProcessingRequest,
 	b *envoy_service_proc_v3.HttpBody,
 ) *envoy_service_proc_v3.ProcessingResponse {
-	ctx := &RequestContext{
+	reqCtx := &RequestContext{
+		Context:     ctx,
 		Attributes:  req.GetAttributes(),
 		EndOfStream: b.GetEndOfStream(),
 	}
 
-	result := processor.ProcessResponseBody(ctx, b.GetBody(), b.GetEndOfStream())
+	result := processor.ProcessResponseBody(reqCtx, b.GetBody(), b.GetEndOfStream())
 	return buildBodyResponse(result, func(resp *envoy_service_proc_v3.BodyResponse) *envoy_service_proc_v3.ProcessingResponse {
 		return &envoy_service_proc_v3.ProcessingResponse{
 			Response: &envoy_service_proc_v3.ProcessingResponse_ResponseBody{
@@ -181,15 +191,17 @@ func (s *Server) handleResponseBody(
 }
 
 func (s *Server) handleRequestTrailers(
+	ctx context.Context,
 	processor Processor,
 	req *envoy_service_proc_v3.ProcessingRequest,
 	_ *envoy_service_proc_v3.HttpTrailers,
 ) *envoy_service_proc_v3.ProcessingResponse {
-	ctx := &RequestContext{
+	reqCtx := &RequestContext{
+		Context:    ctx,
 		Attributes: req.GetAttributes(),
 	}
 
-	result := processor.ProcessRequestTrailers(ctx)
+	result := processor.ProcessRequestTrailers(reqCtx)
 	return buildTrailersResponse(result, func(resp *envoy_service_proc_v3.TrailersResponse) *envoy_service_proc_v3.ProcessingResponse {
 		return &envoy_service_proc_v3.ProcessingResponse{
 			Response: &envoy_service_proc_v3.ProcessingResponse_RequestTrailers{
@@ -200,15 +212,17 @@ func (s *Server) handleRequestTrailers(
 }
 
 func (s *Server) handleResponseTrailers(
+	ctx context.Context,
 	processor Processor,
 	req *envoy_service_proc_v3.ProcessingRequest,
 	_ *envoy_service_proc_v3.HttpTrailers,
 ) *envoy_service_proc_v3.ProcessingResponse {
-	ctx := &RequestContext{
+	reqCtx := &RequestContext{
+		Context:    ctx,
 		Attributes: req.GetAttributes(),
 	}
 
-	result := processor.ProcessResponseTrailers(ctx)
+	result := processor.ProcessResponseTrailers(reqCtx)
 	return buildTrailersResponse(result, func(resp *envoy_service_proc_v3.TrailersResponse) *envoy_service_proc_v3.ProcessingResponse {
 		return &envoy_service_proc_v3.ProcessingResponse{
 			Response: &envoy_service_proc_v3.ProcessingResponse_ResponseTrailers{

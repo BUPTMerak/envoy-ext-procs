@@ -1,6 +1,7 @@
 package extproc
 
 import (
+	"context"
 	"net/http"
 	"net/netip"
 
@@ -14,6 +15,9 @@ const envoyAttributesKey = "envoy.filters.http.ext_proc"
 
 // RequestContext provides context for processing a single request phase.
 type RequestContext struct {
+	// Context is the gRPC stream context, propagated so processors can
+	// honour cancellation and pass deadlines to downstream calls.
+	Context context.Context
 	// Attributes from Envoy (e.g., source.address, request metadata).
 	Attributes map[string]*structpb.Struct
 	// Headers parsed into http.Header for convenience.

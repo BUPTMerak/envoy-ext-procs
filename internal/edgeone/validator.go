@@ -1,6 +1,9 @@
 package edgeone
 
 import (
+	"context"
+	"net"
+	"net/http"
 	"net/netip"
 	"slices"
 	"strings"
@@ -23,13 +26,23 @@ type Config struct {
 	CacheSize   int
 	CacheTTL    time.Duration
 	Timeout     time.Duration
+
+	IdleConnTimeout     time.Duration
+	MaxIdleConns        int
+	MaxIdleConnsPerHost int
+	DialKeepAlive       time.Duration
+
+	WarmInterval time.Duration
+	WarmTimeout  time.Duration
 }
 
 type Validator struct {
-	cache  *expirable.LRU[string, bool]
-	client *teo.Client
-	sg     singleflight.Group
-	log    zerolog.Logger
+	cache        *expirable.LRU[string, bool]
+	client       *teo.Client
+	sg           singleflight.Group
+	log          zerolog.Logger
+	warmInterval time.Duration
+	warmTimeout  time.Duration
 }
 
 func New(cfg Config, log zerolog.Logger) (*Validator, error) {
@@ -43,6 +56,7 @@ func New(cfg Config, log zerolog.Logger) (*Validator, error) {
 	cpf := profile.NewClientProfile()
 	cpf.HttpProfile.Endpoint = cfg.APIEndpoint
 	cpf.HttpProfile.ReqTimeout = int(cfg.Timeout.Seconds())
+	cpf.UnsafeRetryOnConnectionFailure = true
 
 	credential := common.NewCredential(cfg.SecretID, cfg.SecretKey)
 	client, err := teo.NewClient(credential, cfg.Region, cpf)
@@ -55,27 +69,45 @@ func New(cfg Config, log zerolog.Logger) (*Validator, error) {
 			Wrapf(err, "failed to create tencent teo client")
 	}
 
+	transport := &http.Transport{
+		Proxy: http.ProxyFromEnvironment,
+		DialContext: (&net.Dialer{
+			Timeout:   30 * time.Second,
+			KeepAlive: cfg.DialKeepAlive,
+		}).DialContext,
+		MaxIdleConns:          cfg.MaxIdleConns,
+		MaxIdleConnsPerHost:   cfg.MaxIdleConnsPerHost,
+		IdleConnTimeout:       cfg.IdleConnTimeout,
+		ForceAttemptHTTP2:     true,
+		TLSHandshakeTimeout:   10 * time.Second,
+		ExpectContinueTimeout: 1 * time.Second,
+	}
+	client.WithHttpTransport(transport)
+
 	return &Validator{
-		cache:  expirable.NewLRU[string, bool](cfg.CacheSize, nil, cfg.CacheTTL),
-		client: client,
-		log:    log.With().Str("component", "edgeone").Logger(),
+		cache:        expirable.NewLRU[string, bool](cfg.CacheSize, nil, cfg.CacheTTL),
+		client:       client,
+		log:          log.With().Str("component", "edgeone").Logger(),
+		warmInterval: cfg.WarmInterval,
+		warmTimeout:  cfg.WarmTimeout,
 	}, nil
 }
 
-func (v *Validator) IsEdgeOneIP(ip netip.Addr) (bool, error) {
+func (v *Validator) IsEdgeOneIP(ctx context.Context, ip netip.Addr) (bool, error) {
 	ip = ip.Unmap()
-	ipStr := ip.String()
-
-	if cached, ok := v.cache.Get(ipStr); ok {
+	if cached, ok := v.cache.Get(ip.String()); ok {
 		return cached, nil
 	}
+	return v.fetchAndCache(ctx, ip)
+}
 
+// fetchAndCache validates an IP through singleflight (deduplicating concurrent
+// lookups for the same address) and writes the result into the cache.
+func (v *Validator) fetchAndCache(ctx context.Context, ip netip.Addr) (bool, error) {
+	ipStr := ip.String()
 	val, err, _ := v.sg.Do(ipStr, func() (any, error) {
-		if cached, ok := v.cache.Get(ipStr); ok {
-			return cached, nil
-		}
 		start := time.Now()
-		valid, err := v.validateIP(ip)
+		valid, err := v.validateIP(ctx, ip)
 		if err != nil {
 			return false, err
 		}
@@ -83,14 +115,17 @@ func (v *Validator) IsEdgeOneIP(ip netip.Addr) (bool, error) {
 			Dur("duration", time.Since(start)).
 			Str("ip", ipStr).
 			Bool("valid", valid).
-			Msg("IP region validation result")
+			Msg("IP validation completed")
 		v.cache.Add(ipStr, valid)
 		return valid, nil
 	})
-	return val.(bool), err
+	if err != nil {
+		return false, err
+	}
+	return val.(bool), nil
 }
 
-func (v *Validator) validateIP(ip netip.Addr) (bool, error) {
+func (v *Validator) validateIP(ctx context.Context, ip netip.Addr) (bool, error) {
 	// EdgeOne IPs are public; private/loopback can never be EdgeOne.
 	if !ip.IsGlobalUnicast() || ip.IsPrivate() {
 		return false, nil
@@ -99,7 +134,7 @@ func (v *Validator) validateIP(ip netip.Addr) (bool, error) {
 	req := teo.NewDescribeIPRegionRequest()
 	req.IPs = []*string{common.StringPtr(ip.String())}
 
-	resp, err := v.client.DescribeIPRegion(req)
+	resp, err := v.client.DescribeIPRegionWithContext(ctx, req)
 	if err != nil {
 		return false, oops.
 			In("edgeone").
