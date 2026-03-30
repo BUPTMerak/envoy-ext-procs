@@ -98,35 +98,34 @@ func (v *Validator) IsEdgeOneIP(ctx context.Context, ip netip.Addr) (bool, error
 	if cached, ok := v.cache.Get(ip.String()); ok {
 		return cached, nil
 	}
-	return v.fetchAndCache(ctx, ip, false)
+	start := time.Now()
+	return v.fetchAndCache(ctx, ip, func(valid bool) {
+		v.log.Info().
+			Dur("duration", time.Since(start)).
+			Str("ip", ip.String()).
+			Bool("valid", valid).
+			Msg("IP validation completed")
+		v.cache.Add(ip.String(), valid)
+	})
 }
 
 // fetchAndCache validates an IP through singleflight (deduplicating concurrent
 // lookups for the same address) and writes the result into the cache.
-func (v *Validator) fetchAndCache(ctx context.Context, ip netip.Addr, suppressLog bool) (bool, error) {
+func (v *Validator) fetchAndCache(ctx context.Context, ip netip.Addr, postValidate func(bool)) (bool, error) {
+	// EdgeOne IPs are public; private/loopback can never be EdgeOne.
+	if !ip.IsGlobalUnicast() || ip.IsPrivate() {
+		return false, nil
+	}
 	ipStr := ip.String()
 	val, err, _ := v.sg.Do(ipStr, func() (any, error) {
-		start := time.Now()
 		valid, err := v.validateIP(ctx, ip)
 		if err != nil {
 			return false, err
 		}
-		evt := v.log.Info()
-		if suppressLog {
-			evt = v.log.Debug()
-		}
-		evt.
-			Dur("duration", time.Since(start)).
-			Str("ip", ipStr).
-			Bool("valid", valid).
-			Msg("IP validation completed")
-		v.cache.Add(ipStr, valid)
+		postValidate(valid)
 		return valid, nil
 	})
-	if err != nil {
-		return false, err
-	}
-	return val.(bool), nil
+	return val.(bool), err
 }
 
 func (v *Validator) validateIP(ctx context.Context, ip netip.Addr) (bool, error) {
@@ -136,7 +135,7 @@ func (v *Validator) validateIP(ctx context.Context, ip netip.Addr) (bool, error)
 	}
 
 	req := teo.NewDescribeIPRegionRequest()
-	req.IPs = []*string{common.StringPtr(ip.String())}
+	req.IPs = []*string{new(ip.String())}
 
 	resp, err := v.client.DescribeIPRegionWithContext(ctx, req)
 	if err != nil {

@@ -34,18 +34,16 @@ func (v *Validator) warmLoop(ctx context.Context) {
 
 func (v *Validator) warmProbe(ctx context.Context) {
 	var ipStr string
-	var cachedValid bool
-	if key, valid, ok := v.cache.GetOldest(); ok {
+	if key, _, ok := v.cache.GetOldest(); ok {
 		ipStr = key
-		cachedValid = valid
 	} else {
-		v.log.Debug().Msg("no oldest IP found, skipping warm probe")
+		v.log.Debug().Str("reason", "no oldest IP found").Msg("skipping warm probe")
 		return
 	}
 
 	ip, err := netip.ParseAddr(ipStr)
 	if err != nil {
-		v.log.Warn().Err(err).Str("ip", ipStr).Msg("warm probe skipped")
+		v.log.Warn().Err(err).Str("reason", "invalid IP").Str("ip", ipStr).Msg("skipping warm probe")
 		return
 	}
 
@@ -56,26 +54,20 @@ func (v *Validator) warmProbe(ctx context.Context) {
 	}
 
 	start := time.Now()
-	nowValid, err := v.fetchAndCache(ctx, ip, true)
-	if err != nil {
+	if _, err = v.fetchAndCache(ctx, ip, func(valid bool) {
+		v.log.Debug().
+			Dur("duration", time.Since(start)).
+			Str("probe_ip", ipStr).
+			Bool("valid", valid).
+			Msg("warm probe completed")
+		if valid {
+			v.cache.Add(ipStr, valid)
+		}
+	}); err != nil {
 		v.log.Warn().
 			Dur("duration", time.Since(start)).
 			Err(err).
 			Str("probe_ip", ipStr).
 			Msg("warm probe failed")
-		return
 	}
-
-	if cachedValid && !nowValid {
-		v.log.Info().
-			Str("probe_ip", ipStr).
-			Msg("warm probe found validation result flip")
-		v.cache.Remove(ipStr)
-	}
-
-	v.log.Debug().
-		Dur("duration", time.Since(start)).
-		Str("probe_ip", ipStr).
-		Bool("valid", nowValid).
-		Msg("warm probe completed")
 }
