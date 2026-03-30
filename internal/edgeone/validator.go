@@ -98,12 +98,12 @@ func (v *Validator) IsEdgeOneIP(ctx context.Context, ip netip.Addr) (bool, error
 	if cached, ok := v.cache.Get(ip.String()); ok {
 		return cached, nil
 	}
-	return v.fetchAndCache(ctx, ip)
+	return v.fetchAndCache(ctx, ip, false)
 }
 
 // fetchAndCache validates an IP through singleflight (deduplicating concurrent
 // lookups for the same address) and writes the result into the cache.
-func (v *Validator) fetchAndCache(ctx context.Context, ip netip.Addr) (bool, error) {
+func (v *Validator) fetchAndCache(ctx context.Context, ip netip.Addr, suppressLog bool) (bool, error) {
 	ipStr := ip.String()
 	val, err, _ := v.sg.Do(ipStr, func() (any, error) {
 		start := time.Now()
@@ -111,7 +111,11 @@ func (v *Validator) fetchAndCache(ctx context.Context, ip netip.Addr) (bool, err
 		if err != nil {
 			return false, err
 		}
-		v.log.Info().
+		evt := v.log.Info()
+		if suppressLog {
+			evt = v.log.Debug()
+		}
+		evt.
 			Dur("duration", time.Since(start)).
 			Str("ip", ipStr).
 			Bool("valid", valid).

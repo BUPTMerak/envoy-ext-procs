@@ -6,8 +6,6 @@ import (
 	"time"
 )
 
-const fallbackProbeIP = "1.1.1.1"
-
 // StartWarm launches a background goroutine that periodically probes the
 // EdgeOne API to keep the underlying HTTP connection warm. Does nothing if
 // WarmInterval is zero or negative.
@@ -35,9 +33,14 @@ func (v *Validator) warmLoop(ctx context.Context) {
 }
 
 func (v *Validator) warmProbe(ctx context.Context) {
-	ipStr := fallbackProbeIP
-	if key, _, ok := v.cache.GetOldest(); ok {
+	var ipStr string
+	var cachedValid bool
+	if key, valid, ok := v.cache.GetOldest(); ok {
 		ipStr = key
+		cachedValid = valid
+	} else {
+		v.log.Debug().Msg("no oldest IP found, skipping warm probe")
+		return
 	}
 
 	ip, err := netip.ParseAddr(ipStr)
@@ -53,7 +56,7 @@ func (v *Validator) warmProbe(ctx context.Context) {
 	}
 
 	start := time.Now()
-	valid, err := v.fetchAndCache(ctx, ip)
+	nowValid, err := v.fetchAndCache(ctx, ip, true)
 	if err != nil {
 		v.log.Warn().
 			Dur("duration", time.Since(start)).
@@ -63,9 +66,16 @@ func (v *Validator) warmProbe(ctx context.Context) {
 		return
 	}
 
+	if cachedValid && !nowValid {
+		v.log.Info().
+			Str("probe_ip", ipStr).
+			Msg("warm probe found validation result flip")
+		v.cache.Remove(ipStr)
+	}
+
 	v.log.Debug().
 		Dur("duration", time.Since(start)).
 		Str("probe_ip", ipStr).
-		Bool("valid", valid).
+		Bool("valid", nowValid).
 		Msg("warm probe completed")
 }
