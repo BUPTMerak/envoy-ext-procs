@@ -1,7 +1,7 @@
 # Build configuration
 GO ?= go
 GOFLAGS ?= -v
-LDFLAGS ?= -s -w
+LDFLAGS ?= -w
 BUILD_DIR ?= bin
 
 # Discover commands from cmd/
